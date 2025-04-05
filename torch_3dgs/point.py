@@ -26,22 +26,57 @@ def get_point_clouds(cameras, depths, alphas, rgbs=None):
     coords = []
     rgbas = []
 
-    # TODO: Compute ray origins and directions for each pixel
-    # Hint: You need to use the camera intrinsics (intrinsics) and extrinsics (c2ws)
-    # to convert pixel coordinates into world-space rays.
-    # rays_o, rays_d = ......
+    # Create meshgrid (pixel coordinates)
+    u, v = torch.meshgrid(torch.arange(W), torch.arange(H), indexing='xy')
+    u = u.to(depths.device).float()
+    v = v.to(depths.device).float()
+    pixel_coords = torch.stack([u, v, torch.ones_like(u)], dim=-1)
 
-    # TODO: Compute 3D world coordinates using depth values
-    # Hint: Use the ray equation: P = O + D * depth
-    # P: 3D point, O: ray origin, D: ray direction, depth: depth value
-    # pts = ......
+    N = depths.shape[0]
+    for i in range(N):
+        depth = depths[i]
+        alpha = alphas[i]
+        K = intrinsics[i][:3, :3]
+        Rot = c2ws[i][:3, :3]
+        Trans = c2ws[i][:3, 3]
 
-    # TODO: Apply the alpha mask to filter valid points
-    # Hint: Mask should be applied to both coordinates and RGB values (if provided)
-    # mask = ......
-    # coords = pts[mask].cpu().numpy()
+        # TODO: Compute ray origins and directions for each pixel
+        # Hint: You need to use the camera intrinsics (intrinsics) and extrinsics (c2ws)
+        # to convert pixel coordinates into world-space rays.
+        # rays_o, rays_d = ......
+        cam_coords = pixel_coords @ torch.inverse(K).T
+
+        # Compute rays_d
+        rays_d = cam_coords / torch.norm(cam_coords, dim=-1, keepdim=True)  # normalize
+        rays_d = rays_d @ Rot.T
+
+        # Compute rays_o
+        rays_o = Trans.expand_as(rays_d)
+
+        # TODO: Compute 3D world coordinates using depth values
+        # Hint: Use the ray equation: P = O + D * depth
+        # P: 3D point, O: ray origin, D: ray direction, depth: depth value
+        # pts = ......
+        pts = rays_o + rays_d * depth.unsqueeze(-1)
+
+        # TODO: Apply the alpha mask to filter valid points
+        # Hint: Mask should be applied to both coordinates and RGB values (if provided)
+        # mask = ......
+        # coords = pts[mask].cpu().numpy()
+        mask = alpha > 0
+        pts = pts[mask]
+        coords.append(pts)
+
+        if rgbs is not None:
+            rgb = rgbs[i][mask]
+            a = torch.ones((rgb.shape[0], 1), dtype=rgb.dtype, device=rgb.device)
+            rgba = torch.cat([rgb, a], dim=-1)
+            rgbas.append(rgba)
+    
+    coords = torch.cat(coords, dim=0).cpu().numpy()
 
     if rgbs is not None:
+        rgbas = torch.cat(rgbas, dim=0).cpu().numpy()
         channels = dict(
             R=rgbas[..., 0],
             G=rgbas[..., 1],
