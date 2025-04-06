@@ -172,10 +172,14 @@ class GaussRenderer(nn.Module):
                 # TODO: Extract the pixel coordinates for this tile.
                 # Hint: The tile's pixel coordinates should be extracted using slicing and flattening.
                 # tile_coord = ...
+                valid_indices = in_mask.nonzero(as_tuple=True)[0]
+                tile_coord = self.pix_coord[h:h+self.tile_size, w:w+self.tile_size].reshape(-1, 2)
     
                 # TODO: Sort Gaussians by depth.
                 # Hint: Sorting should be based on the depth values of Gaussians.
                 # sorted_depths, index = ...
+                sorted_depths, index = torch.sort(depths[valid_indices], descending=True)  # sort from farthest to nearest
+                sorted_indices = valid_indices[index]
     
                 # TODO: Extract relevant Gaussian properties for the tile.
                 # Hint: Use the computed index to rearrange the following tensors.
@@ -184,32 +188,60 @@ class GaussRenderer(nn.Module):
                 # sorted_conic = ...
                 # sorted_opacity = ...
                 # sorted_color = ...
+                sorted_means2D = means2D[sorted_indices]
+                sorted_cov2d = cov2d[sorted_indices]
+                sorted_opacity = opacity[sorted_indices]
+                sorted_color = color[sorted_indices]
     
                 # TODO: Compute the distance from each pixel in the tile to the Gaussian centers.
                 # Hint: This involves computing dx, dy between pixel coordinates and Gaussian centers.
                 # dx = ...
                 # dx_0, dx_1 = ...
+                dx = tile_coord[:, None, 0] - sorted_means2D[None, :, 0]
+                dy = tile_coord[:, None, 1] - sorted_means2D[None, :, 1]
+                dx_0, dx_1 = dx, dy
     
                 # TODO: Compute the 2D Gaussian weight for each pixel.
                 # Hint: The weight is determined by the Mahalanobis distance using the covariance matrix.
                 # gauss_weight = ...
+                inv_cov2d = torch.inverse(sorted_cov2d)
+                mahal_dist = (
+                    inv_cov2d[:, 0, 0][None, :] * (dx_0**2) +
+                    2 * inv_cov2d[:, 0, 1][None, :] * dx_0 * dx_1 +
+                    inv_cov2d[:, 1, 1][None, :] * (dx_1**2)
+                )
+                gauss_weight = torch.exp(-0.5 * mahal_dist)
     
                 # TODO: Compute the alpha blending using transmittance (T).
                 # Hint: Ensure proper transparency blending by applying the alpha compositing formula.
                 # alpha = ...
                 # T = ...
                 # acc_alpha = ...
+                eps = 1e-8  # avoid zero multiplication
+                alpha = sorted_opacity.T * gauss_weight
+                T = torch.cumprod(1. - alpha + eps, dim=1)
+                T = torch.cat([torch.ones_like(T[:, :1]), T[:, :-1]], dim=1)
+                acc_alpha = (T * alpha).sum(dim=1, keepdim=True)
     
                 # TODO: Compute the color and depth contributions.
                 # Hint: Perform weighted summation using computed transmittance and opacity.
                 # tile_color = ...
                 # tile_depth = ...
-    
+                tile_color = (sorted_color[None, :, :] * (T * alpha)[:, :, None]).sum(dim=1)
+                tile_depth = (sorted_depths[None, :] * (T * alpha)).sum(dim=1, keepdim=True)
+
                 # TODO: Store computed values into rendering buffers.
                 # Hint: Assign tile-wise computed values to corresponding locations in the full image buffers.
                 # self.render_color[h:h+self.tile_size, w:w+self.tile_size] = ...
                 # self.render_depth[h:h+self.tile_size, w:w+self.tile_size] = ...
                 # self.render_alpha[h:h+self.tile_size, w:w+self.tile_size] = ...
+                color_image = tile_color.reshape(self.tile_size, self.tile_size, 3)
+                depth_image = tile_depth.reshape(self.tile_size, self.tile_size, 1)
+                alpha_image = acc_alpha.reshape(self.tile_size, self.tile_size, 1)
+
+                self.render_color[h:h+self.tile_size, w:w+self.tile_size] = color_image
+                self.render_depth[h:h+self.tile_size, w:w+self.tile_size] = depth_image
+                self.render_alpha[h:h+self.tile_size, w:w+self.tile_size] = alpha_image
 
         return {
             "render": self.render_color,
